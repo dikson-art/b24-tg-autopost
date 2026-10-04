@@ -2,11 +2,11 @@ name: B24 Telegram autopost
 
 on:
   schedule:
-    - cron: "30 7 * * *"   # 10:30 МСК
-    - cron: "30 10 * * *"  # 13:30 МСК
-    - cron: "30 13 * * *"  # 16:30 МСК
-    - cron: "30 16 * * *"  # 19:30 МСК
-    - cron: "30 18 * * *"  # 21:30 МСК
+    - cron: '30 7 * * *'
+    - cron: '30 10 * * *'
+    - cron: '30 13 * * *'
+    - cron: '30 16 * * *'
+    - cron: '30 18 * * *'
   workflow_dispatch: {}
 
 permissions:
