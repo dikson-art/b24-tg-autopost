@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: b24-autopost
@@ -72,3 +73,12 @@ jobs:
           name: logs-${{ github.run_id }}
           path: tools/b24-autopost/logs/
           if-no-files-found: ignore
+
+      - name: Report failure as GitHub issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "Автопостинг: сбой прогона ($(date -u +%Y-%m-%dT%H:%MZ))" \
+            --body "Прогон упал: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} — автопостинг НЕ отработал. Проверить логи (артефакт logs-)." || true
