@@ -1,0 +1,73 @@
+name: B24 Telegram autopost
+
+on:
+  schedule:
+    - cron: "30 7 * * *"   # 10:30 МСК
+    - cron: "30 10 * * *"  # 13:30 МСК
+    - cron: "30 13 * * *"  # 16:30 МСК
+    - cron: "30 16 * * *"  # 19:30 МСК
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: b24-autopost
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check tools
+        run: |
+          python3 --version
+          ffmpeg -version | head -1
+
+      - name: Write config from secrets
+        working-directory: tools/b24-autopost
+        env:
+          B24_WEBHOOK_URL: ${{ secrets.B24_WEBHOOK_URL }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          cfg = json.load(open("config.example.json", encoding="utf-8"))
+          cfg["bitrix"]["webhook_url"] = os.environ["B24_WEBHOOK_URL"]
+          cfg["telegram"]["bot_token"] = os.environ["TG_BOT_TOKEN"]
+          cfg["telegram"]["chat_id"] = "-1002203119783"
+          json.dump(cfg, open("config.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+          print("config written")
+          PY
+
+      - name: Check access
+        working-directory: tools/b24-autopost
+        run: python3 service.py --check
+
+      - name: Post next clip
+        working-directory: tools/b24-autopost
+        run: python3 service.py --max-posts 1
+
+      - name: Commit state
+        run: |
+          git config user.name "b24-autopost-bot"
+          git config user.email "b24-autopost-bot@users.noreply.github.com"
+          git add tools/b24-autopost/state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "state: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          else
+            echo "state unchanged"
+          fi
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.run_id }}
+          path: tools/b24-autopost/logs/
+          if-no-files-found: ignore

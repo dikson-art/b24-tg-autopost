@@ -1,0 +1,24 @@
+{
+  "bitrix": {
+    "webhook_url": "",
+    "folder_name": "Вопросы с лекций",
+    "folder_id": null,
+    "storage_id": null
+  },
+  "telegram": {
+    "bot_token": "",
+    "chat_id": "",
+    "api_base": "https://api.telegram.org",
+    "button_text": "Смотреть на сайте",
+    "disable_notification": false,
+    "max_posts_per_run": 1,
+    "post_delay_seconds": 10,
+    "max_upload_mb": 49,
+    "compress_target_mb": 46
+  },
+  "site": {
+    "base_url": "https://medinfoservice.org",
+    "manual_map": {}
+  },
+  "state_file": "state.json"
+}
