@@ -6,6 +6,7 @@ on:
     - cron: "30 10 * * *"  # 13:30 МСК
     - cron: "30 13 * * *"  # 16:30 МСК
     - cron: "30 16 * * *"  # 19:30 МСК
+    - cron: "30 18 * * *"  # 21:30 МСК
   workflow_dispatch: {}
 
 permissions:
@@ -39,7 +40,7 @@ jobs:
           cfg = json.load(open("config.example.json", encoding="utf-8"))
           cfg["bitrix"]["webhook_url"] = os.environ["B24_WEBHOOK_URL"]
           cfg["telegram"]["bot_token"] = os.environ["TG_BOT_TOKEN"]
-          cfg["telegram"]["chat_id"] = "-1002203119783"
+          cfg["telegram"]["chat_id"] = "-1001764407903"
           json.dump(cfg, open("config.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
           print("config written")
           PY
