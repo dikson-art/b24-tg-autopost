@@ -16,6 +16,7 @@
 | Сервис (скачивает из Б24, сжимает при необходимости, постит в Telegram) | `tools/b24-autopost/service.py` |
 | Шаблон конфига (секреты подставляются из GitHub Secrets) | `tools/b24-autopost/config.example.json` |
 | Журнал публикаций (защита от дублей) | `tools/b24-autopost/state.json` — обновляется и коммитится автоматически |
+| Зависимости от платежей (что оплачивать и где следить) | `docs/PAYMENTS.md` |
 
 ## Секреты (Settings → Secrets and variables → Actions)
 
