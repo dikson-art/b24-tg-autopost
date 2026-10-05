@@ -2,12 +2,16 @@ name: B24 Telegram autopost
 
 on:
   schedule:
-    - cron: '30 7 * * *'
-    - cron: '30 10 * * *'
-    - cron: '30 13 * * *'
-    - cron: '30 16 * * *'
-    - cron: '30 18 * * *'
-  workflow_dispatch: {}
+    # Пробуем запускаться каждый час в течение дня (10:15–21:15 МСК).
+    # Реальный темп постов ограничивает встроенная "защита темпа" (не чаще ~1 поста в 75 минут),
+    # поэтому лишние срабатывания безопасны; зато потеря отдельных запусков не критична.
+    - cron: '15 7-18 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Ignore pacing guard (force post)
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -46,11 +50,45 @@ jobs:
           print("config written")
           PY
 
+      - name: Pace guard
+        id: guard
+        working-directory: tools/b24-autopost
+        env:
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          python3 - <<'PY'
+          import datetime, json, os
+          due = True
+          reason = ""
+          st = json.load(open("state.json", encoding="utf-8"))
+          tss = []
+          for item in (st.get("files") or {}).values():
+              ts = item.get("ts")
+              if ts:
+                  try:
+                      tss.append(datetime.datetime.fromisoformat(ts))
+                  except Exception:
+                      pass
+          if tss:
+              now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+              gap = (now - max(tss)).total_seconds() / 60.0
+              print("Last post: %s | gap: %.0f min" % (max(tss), gap))
+              if gap < 75 and str(os.environ.get("FORCE", "")).lower() != "true":
+                  due = False
+                  reason = "recent post (%.0f min ago)" % gap
+          else:
+              print("No posts yet")
+          print("DUE=%s %s" % (due, reason))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("due=%s\n" % ("true" if due else "false"))
+          PY
+
       - name: Check access
         working-directory: tools/b24-autopost
         run: python3 service.py --check
 
       - name: Post next clip
+        if: steps.guard.outputs.due == 'true'
         working-directory: tools/b24-autopost
         run: python3 service.py --max-posts 1
 
