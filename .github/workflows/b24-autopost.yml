@@ -123,3 +123,17 @@ jobs:
           gh issue create --repo "${{ github.repository }}" \
             --title "Автопостинг: сбой прогона ($(date -u +%Y-%m-%dT%H:%MZ))" \
             --body "Прогон упал: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} — автопостинг НЕ отработал. Проверить логи (артефакт logs-)." || true
+
+      - name: Telegram failure alert
+        if: failure()
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          tok = os.environ["TG_BOT_TOKEN"]
+          text = "⚠️ Сбой автопостинга Б24→Telegram / прогон: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          data = json.dumps({"chat_id": "-1002203119783", "text": text}).encode("utf-8")
+          req = urllib.request.Request("https://api.telegram.org/bot%s/sendMessage" % tok, data=data, headers={"Content-Type": "application/json"})
+          print(urllib.request.urlopen(req, timeout=30).read().decode()[:120])
+          PY
