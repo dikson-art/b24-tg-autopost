@@ -178,7 +178,10 @@ def b24_find_folder(cfg):
 
 
 def _question_num(item):
-    m = re.search(r"\((\d+)\)", item.get("NAME") or "")
+    name = item.get("NAME") or ""
+    m = re.search(r"\((\d+)\)", name)
+    if not m:
+        m = re.search(r"Вопрос[а-яё]*\s*(\d+)", name, re.IGNORECASE)
     return int(m.group(1)) if m else 9999
 
 
@@ -288,20 +291,50 @@ def site_find_lecture_page(cfg, subfolder_name):
     return cands[0]
 
 
+def _extract_lectors(raw):
+    """Вытащить имена лекторов со страницы (поддерживает «Лектор:» и «Лекторы:»)."""
+    m = re.search(r"Лектор[ыа]?\s*:(.{0,1500})", raw, re.S | re.I)
+    if not m:
+        return []
+    chunk = m.group(1)
+    names = []
+    for seg in re.split(r"<[^>]*>", chunk):
+        seg = seg.replace("&nbsp;", " ").strip(" \t\r\n:;,-.")
+        words = seg.split()
+        if 2 <= len(words) <= 4 and all(re.fullmatch(r"[А-ЯЁ][а-яё-]+", w) for w in words):
+            names.append(seg)
+    if not names:
+        txt = re.sub(r"<[^>]*>", " ", chunk)
+        txt = re.sub(r"\s+", " ", txt)
+        for mm in re.finditer(r"([А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){1,2})(?=\s*(?:<|:|,|-|$))", txt):
+            nm = mm.group(1).strip()
+            if nm and nm not in names:
+                names.append(nm)
+    return names[:3]
+
+
 def site_fetch_lecture_info(url):
     raw = http_request(url, timeout=60).decode("utf-8", "replace")
     title = None
     lector = None
-    m = re.search(r"Запись (?:вебинара|конференции|доклада)\s*:?\s*«([^»]+)»", raw)
+    m = re.search(r"Запись\s+(?:вебинара|конференции|доклада)\s*:?\s*«(.*?)»\s*</h2>", raw, re.S)
     if m:
         title = m.group(1).strip()
+    if not title:
+        m = re.search(r"Запись (?:вебинара|конференции|доклада)\s*:?\s*«([^»]+)»", raw)
+        if m:
+            title = m.group(1).strip()
     if not title:
         m = re.search(r'<meta property="og:title" content="([^"]+)"', raw)
         if m:
             title = m.group(1).strip()
-    m = re.search(r"Лектор:\s*([^<]{3,300})", raw)
-    if m:
-        lector = re.split(r"\s+[—-]\s+", m.group(1).strip())[0].strip()
+    lectors = _extract_lectors(raw)
+    if lectors:
+        lector = ", ".join(lectors)
+    else:
+        m = re.search(r"Лектор:\s*([^<]{3,300})", raw)
+        if m:
+            lector = re.split(r"\s+[—-]\s+", m.group(1).strip())[0].strip()
     return {"title": title, "lector": lector, "url": url}
 
 
@@ -315,7 +348,8 @@ def build_caption(info, question_num):
         head = "🎥 Ответ на вопрос с лекции «%s»" % t
     lines = [head]
     if l:
-        lines += ["", "Лектор: " + l]
+        prefix = "Лекторы" if ", " in l else "Лектор"
+        lines += ["", prefix + ": " + l]
     lines += ["", "▶️ Полная запись лекции — на сайте: " + u]
     caption = "\n".join(lines)
     if len(caption) > 1024:
