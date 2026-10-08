@@ -29,6 +29,8 @@ import re
 import subprocess
 import sys
 import time
+import uuid
+from state_store import StateError, atomic_write, persist
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -482,10 +484,15 @@ def load_state(path):
 
 def save_state(path, state):
     state["updated"] = datetime.now().isoformat(timespec="seconds")
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    try:
+        atomic_write(path, state)
+        if os.environ.get("B24TG_DURABLE_STATE") == "1":
+            persist(path, state)
+        elif os.environ.get("GITHUB_ACTIONS") == "true":
+            raise StateError("GitHub Actions requires durable state mode")
+    except Exception as exc:
+        raise StateError("Ошибка сохранения состояния; автоматическая повторная отправка запрещена") from exc
+
 
 
 # ------------------------------ Команды ------------------------------
@@ -582,6 +589,8 @@ def cmd_run(cfg, dry_run, max_posts_override=None):
     subs = b24_subfolders(cfg, folder_id)
     state_path = os.path.join(BASE_DIR, cfg.get("state_file") or "state.json")
     state = load_state(state_path)
+    if any(v.get("status") != "published" for v in state.get("files", {}).values()):
+        raise StateError("Есть незавершённая отправка; нужна ручная сверка с Telegram")
     limit = max_posts_override if max_posts_override is not None else int(tg.get("max_posts_per_run") or 0)
     max_mb = float(tg.get("max_upload_mb") or 49)
     target_mb = float(tg.get("compress_target_mb") or 46)
@@ -600,7 +609,8 @@ def cmd_run(cfg, dry_run, max_posts_override=None):
                 continue
             if limit and posted >= limit:
                 log("Достигнут лимит постов за запуск (%d) — остальное в следующий раз." % limit)
-                save_state(state_path, state)
+                if not dry_run:
+                    save_state(state_path, state)
                 return 0
             name = sub.get("NAME") or ""
             fname = fl.get("NAME") or ""
@@ -644,12 +654,19 @@ def cmd_run(cfg, dry_run, max_posts_override=None):
                     except OSError:
                         pass
                     continue
+            attempt_id = uuid.uuid4().hex
+            state["files"][key] = {
+                "status": "pending", "attempt_id": attempt_id,
+                "ts": datetime.now().isoformat(timespec="seconds"), "url": page_url,
+            }
+            # Must reach remote main before the irreversible Telegram request.
+            save_state(state_path, state)
             log("  отправляю в Telegram…")
             try:
                 res = tg_send_video(cfg, send_path, caption, tg.get("button_text"), page_url)
             except Exception as exc:
-                log("  !! отправка не удалась: %s" % exc)
-                log("     Останов, чтобы не повторять по всем клипам. Проверьте права бота в канале.")
+                log("  !! результат отправки не подтверждён: %s" % exc)
+                log("     Отметка pending сохранена. Сверьте канал перед снятием блокировки.")
                 for pth in {local, send_path}:
                     if pth:
                         try:
@@ -659,6 +676,7 @@ def cmd_run(cfg, dry_run, max_posts_override=None):
                 return 1
             state["files"][key] = {
                 "status": "published",
+                "attempt_id": attempt_id,
                 "message_id": (res or {}).get("message_id") if isinstance(res, dict) else None,
                 "ts": datetime.now().isoformat(timespec="seconds"),
                 "url": page_url,
@@ -672,7 +690,8 @@ def cmd_run(cfg, dry_run, max_posts_override=None):
                     except OSError:
                         pass
             time.sleep(int(tg.get("post_delay_seconds") or 0))
-    save_state(state_path, state)
+    if not dry_run:
+        save_state(state_path, state)
     log("Готово. Новых публикаций: %d" % posted)
     return 0
 
@@ -690,8 +709,16 @@ def main():
         return cmd_check(cfg)
     if args.test_site:
         return cmd_test_site(cfg)
-    return cmd_run(cfg, dry_run=args.dry_run, max_posts_override=args.max_posts)
+    try:
+        return cmd_run(cfg, dry_run=args.dry_run, max_posts_override=args.max_posts)
+    except StateError as exc:
+        log(str(exc))
+        if os.environ.get("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                fh.write("failure_kind=state\n")
+        return 3
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
