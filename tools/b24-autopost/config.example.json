@@ -2,6 +2,7 @@
   "bitrix": {
     "webhook_url": "",
     "folder_name": "Вопросы с лекций",
+    "priority_folders": ["Зайцева 28.09", "Гуров 29.09", "Кравчук 28.09"],
     "folder_id": null,
     "storage_id": null
   },

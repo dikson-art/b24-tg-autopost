@@ -2,10 +2,10 @@ name: B24 Telegram autopost
 
 on:
   schedule:
-    # Пробуем запускаться каждый час в течение дня (10:15–21:15 МСК).
-    # Реальный темп постов ограничивает встроенная "защита темпа" (не чаще ~1 поста в 75 минут),
+    # Пробуем запускаться каждый час в течение дня (09:15–22:15 МСК).
+    # Реальный темп постов ограничивает «защита темпа» (режим догона: не чаще ~45 минут),
     # поэтому лишние срабатывания безопасны; зато потеря отдельных запусков не критична.
-    - cron: '15 7-18 * * *'
+    - cron: '15 6-19 * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -76,7 +76,7 @@ jobs:
               now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
               gap = (now - max(tss)).total_seconds() / 60.0
               print("Last post: %s | gap: %.0f min" % (max(tss), gap))
-              if gap < 75 and str(os.environ.get("FORCE", "")).lower() != "true":
+              if gap < 45 and str(os.environ.get("FORCE", "")).lower() != "true":
                   due = False
                   reason = "recent post (%.0f min ago)" % gap
           else:

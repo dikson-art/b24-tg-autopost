@@ -588,90 +588,99 @@ def cmd_run(cfg, dry_run, max_posts_override=None):
     posted = 0
 
     # Чередуем лекции «раундами» (З, Г, К, З, Г, К, …), чтобы посты распределялись равномерно.
+    # Приоритетные папки (для догона по дедлайну) идут в очередь раньше остальных.
     per_sub = [(sub, b24_files(cfg, sub.get("ID"))) for sub in subs]
-    max_len = max([len(files) for _, files in per_sub], default=0)
-    for i in range(max_len):
-        for sub, files in per_sub:
-            if i >= len(files):
-                continue
-            fl = files[i]
-            key = "%s|%s|%s" % (sub.get("NAME"), fl.get("NAME"), fl.get("SIZE"))
-            if key in state["files"]:
-                continue
-            if limit and posted >= limit:
-                log("Достигнут лимит постов за запуск (%d) — остальное в следующий раз." % limit)
-                save_state(state_path, state)
-                return 0
-            name = sub.get("NAME") or ""
-            fname = fl.get("NAME") or ""
-            log("Новый клип: %s / %s" % (name, fname))
-            page_url = site_find_lecture_page(cfg, name)
-            if not page_url:
-                log("  !! не нашёл страницу лекции для «%s» — добавьте в site.manual_map" % name)
-                continue
-            info = site_fetch_lecture_info(page_url)
-            qnum = _question_num(fl)
-            qnum = qnum if qnum != 9999 else None
-            caption = build_caption(info, qnum)
-            if dry_run:
-                try:
-                    sz_mb = int(fl.get("SIZE") or 0) / 1048576.0
-                except Exception:
-                    sz_mb = 0.0
-                extra = ""
-                if sz_mb > max_mb:
-                    extra = " (сейчас %.0f МБ — будет сжато до ~%d МБ)" % (sz_mb, target_mb)
-                log("  [dry-run] было бы опубликовано%s:\n%s" % (extra, caption))
-                posted += 1
-                continue
-            tmpdir = os.path.join(BASE_DIR, "tmp")
-            os.makedirs(tmpdir, exist_ok=True)
-            local = os.path.join(tmpdir, fname)
-            log("  скачиваю…")
-            try:
-                b24_download(cfg, fl.get("ID"), local)
-            except Exception as exc:
-                log("  !! скачать не удалось: %s — остановка до следующего запуска" % exc)
-                return 1
-            send_path = local
-            if os.path.getsize(local) > max_mb * 1024 * 1024:
-                try:
-                    send_path = compress_for_upload(cfg, local, max_mb, target_mb)
-                except Exception as exc:
-                    log("  !! сжатие не удалось (%s) — клип пропущен до следующего раза" % exc)
-                    try:
-                        os.remove(local)
-                    except OSError:
-                        pass
-                    continue
-            log("  отправляю в Telegram…")
-            try:
-                res = tg_send_video(cfg, send_path, caption, tg.get("button_text"), page_url)
-            except Exception as exc:
-                log("  !! отправка не удалась: %s" % exc)
-                log("     Останов, чтобы не повторять по всем клипам. Проверьте права бота в канале.")
-                for pth in {local, send_path}:
-                    if pth:
-                        try:
-                            os.remove(pth)
-                        except OSError:
-                            pass
-                return 1
-            state["files"][key] = {
-                "status": "published",
-                "message_id": (res or {}).get("message_id") if isinstance(res, dict) else None,
-                "ts": datetime.now().isoformat(timespec="seconds"),
-                "url": page_url,
-            }
+    prio_names = set(str(x).strip().lower() for x in ((cfg.get("bitrix") or {}).get("priority_folders") or []))
+    prio_pairs = [(s, f) for s, f in per_sub if (s.get("NAME") or "").strip().lower() in prio_names]
+    rest_pairs = [(s, f) for s, f in per_sub if (s.get("NAME") or "").strip().lower() not in prio_names]
+
+    def _block_queue(pairs):
+        ml = max([len(f) for _, f in pairs], default=0)
+        out = []
+        for j2 in range(ml):
+            for s, f in pairs:
+                if j2 < len(f):
+                    out.append((s, f[j2]))
+        return out
+
+    for sub, fl in (_block_queue(prio_pairs) + _block_queue(rest_pairs)):
+        key = "%s|%s|%s" % (sub.get("NAME"), fl.get("NAME"), fl.get("SIZE"))
+        if key in state["files"]:
+            continue
+        if limit and posted >= limit:
+            log("Достигнут лимит постов за запуск (%d) — остальное в следующий раз." % limit)
             save_state(state_path, state)
+            return 0
+        name = sub.get("NAME") or ""
+        fname = fl.get("NAME") or ""
+        log("Новый клип: %s / %s" % (name, fname))
+        page_url = site_find_lecture_page(cfg, name)
+        if not page_url:
+            log("  !! не нашёл страницу лекции для «%s» — добавьте в site.manual_map" % name)
+            continue
+        info = site_fetch_lecture_info(page_url)
+        qnum = _question_num(fl)
+        qnum = qnum if qnum != 9999 else None
+        caption = build_caption(info, qnum)
+        if dry_run:
+            try:
+                sz_mb = int(fl.get("SIZE") or 0) / 1048576.0
+            except Exception:
+                sz_mb = 0.0
+            extra = ""
+            if sz_mb > max_mb:
+                extra = " (сейчас %.0f МБ — будет сжато до ~%d МБ)" % (sz_mb, target_mb)
+            log("  [dry-run] было бы опубликовано%s:\n%s" % (extra, caption))
             posted += 1
+            continue
+        tmpdir = os.path.join(BASE_DIR, "tmp")
+        os.makedirs(tmpdir, exist_ok=True)
+        local = os.path.join(tmpdir, fname)
+        log("  скачиваю…")
+        try:
+            b24_download(cfg, fl.get("ID"), local)
+        except Exception as exc:
+            log("  !! скачать не удалось: %s — остановка до следующего запуска" % exc)
+            return 1
+        send_path = local
+        if os.path.getsize(local) > max_mb * 1024 * 1024:
+            try:
+                send_path = compress_for_upload(cfg, local, max_mb, target_mb)
+            except Exception as exc:
+                log("  !! сжатие не удалось (%s) — клип пропущен до следующего раза" % exc)
+                try:
+                    os.remove(local)
+                except OSError:
+                    pass
+                continue
+        log("  отправляю в Telegram…")
+        try:
+            res = tg_send_video(cfg, send_path, caption, tg.get("button_text"), page_url)
+        except Exception as exc:
+            log("  !! отправка не удалась: %s" % exc)
+            log("     Останов, чтобы не повторять по всем клипам. Проверьте права бота в канале.")
             for pth in {local, send_path}:
                 if pth:
                     try:
                         os.remove(pth)
                     except OSError:
                         pass
-            time.sleep(int(tg.get("post_delay_seconds") or 0))
+            return 1
+        state["files"][key] = {
+            "status": "published",
+            "message_id": (res or {}).get("message_id") if isinstance(res, dict) else None,
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "url": page_url,
+        }
+        save_state(state_path, state)
+        posted += 1
+        for pth in {local, send_path}:
+            if pth:
+                try:
+                    os.remove(pth)
+                except OSError:
+                    pass
+        time.sleep(int(tg.get("post_delay_seconds") or 0))
     save_state(state_path, state)
     log("Готово. Новых публикаций: %d" % posted)
     return 0
