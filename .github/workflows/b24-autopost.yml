@@ -28,6 +28,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Install ffmpeg & check tools
         run: |
@@ -91,49 +93,66 @@ jobs:
         run: python3 service.py --check
 
       - name: Post next clip
+        id: post
         if: steps.guard.outputs.due == 'true'
         working-directory: tools/b24-autopost
+        env:
+          B24TG_DURABLE_STATE: '1'
         run: python3 service.py --max-posts 1
 
-      - name: Commit state
+      - name: Classify failure
+        id: failure_detail
+        if: failure()
+        env:
+          POST_OUTCOME: ${{ steps.post.outcome }}
+          FAILURE_KIND: ${{ steps.post.outputs.failure_kind }}
         run: |
-          git config user.name "b24-autopost-bot"
-          git config user.email "b24-autopost-bot@users.noreply.github.com"
-          git add tools/b24-autopost/state.json
-          if ! git diff --cached --quiet; then
-            git commit -m "state: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            git push
-          else
-            echo "state unchanged"
-          fi
+          python3 - <<'PY'
+          import os
+          if os.environ["FAILURE_KIND"] == "state":
+              detail = "Ошибка сохранения/сверки состояния. Публикация могла состояться; повторная отправка заблокирована до проверки pending и канала."
+          elif os.environ["POST_OUTCOME"] == "failure":
+              detail = "Ошибка этапа публикации. Если есть pending, результат Telegram не подтверждён; нужна ручная сверка, повторять отправку нельзя."
+          else:
+              detail = "Ошибка подготовки или проверки доступов; этап публикации не завершался ошибкой."
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("detail=" + detail + "\n")
+          print(detail)
+          PY
 
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ github.run_id }}
-          path: tools/b24-autopost/logs/
+          path: |
+            tools/b24-autopost/logs/
+            tools/b24-autopost/state.json
           if-no-files-found: ignore
 
       - name: Report failure as GitHub issue
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FAILURE_DETAIL: ${{ steps.failure_detail.outputs.detail }}
         run: |
           gh issue create --repo "${{ github.repository }}" \
             --title "Автопостинг: сбой прогона ($(date -u +%Y-%m-%dT%H:%MZ))" \
-            --body "Прогон упал: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} — автопостинг НЕ отработал. Проверить логи (артефакт logs-)." || true
+            --body "Прогон упал: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} — $FAILURE_DETAIL Проверить состояние и логи (артефакт logs-${{ github.run_id }})." || true
 
       - name: Telegram failure alert
         if: failure()
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          FAILURE_DETAIL: ${{ steps.failure_detail.outputs.detail }}
         run: |
           python3 - <<'PY'
           import json, os, urllib.request
           tok = os.environ["TG_BOT_TOKEN"]
           text = "⚠️ Сбой автопостинга Б24→Telegram / прогон: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          text += "\n" + os.environ["FAILURE_DETAIL"]
           data = json.dumps({"chat_id": "-1002203119783", "text": text}).encode("utf-8")
           req = urllib.request.Request("https://api.telegram.org/bot%s/sendMessage" % tok, data=data, headers={"Content-Type": "application/json"})
           print(urllib.request.urlopen(req, timeout=30).read().decode()[:120])
           PY
+
