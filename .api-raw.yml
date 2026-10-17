@@ -1,0 +1,139 @@
+﻿name: B24 Telegram autopost
+
+on:
+  schedule:
+    # Пробуем запускаться каждый час в течение дня (09:15–22:15 МСК).
+    # Реальный темп постов ограничивает «защита темпа» (режим догона: не чаще ~45 минут),
+    # поэтому лишние срабатывания безопасны; зато потеря отдельных запусков не критична.
+    - cron: '15 6-19 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Ignore pacing guard (force post)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: b24-autopost
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ffmpeg & check tools
+        run: |
+          python3 --version
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Write config from secrets
+        working-directory: tools/b24-autopost
+        env:
+          B24_WEBHOOK_URL: ${{ secrets.B24_WEBHOOK_URL }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          cfg = json.load(open("config.example.json", encoding="utf-8"))
+          cfg["bitrix"]["webhook_url"] = os.environ["B24_WEBHOOK_URL"]
+          cfg["telegram"]["bot_token"] = os.environ["TG_BOT_TOKEN"]
+          cfg["telegram"]["chat_id"] = "-1001764407903"
+          json.dump(cfg, open("config.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+          print("config written")
+          PY
+
+      - name: Pace guard
+        id: guard
+        working-directory: tools/b24-autopost
+        env:
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          python3 - <<'PY'
+          import datetime, json, os
+          due = True
+          reason = ""
+          st = json.load(open("state.json", encoding="utf-8"))
+          tss = []
+          for item in (st.get("files") or {}).values():
+              ts = item.get("ts")
+              if ts:
+                  try:
+                      tss.append(datetime.datetime.fromisoformat(ts))
+                  except Exception:
+                      pass
+          if tss:
+              now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+              gap = (now - max(tss)).total_seconds() / 60.0
+              print("Last post: %s | gap: %.0f min" % (max(tss), gap))
+              if gap < 45 and str(os.environ.get("FORCE", "")).lower() != "true":
+                  due = False
+                  reason = "recent post (%.0f min ago)" % gap
+          else:
+              print("No posts yet")
+          print("DUE=%s %s" % (due, reason))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("due=%s\n" % ("true" if due else "false"))
+          PY
+
+      - name: Check access
+        working-directory: tools/b24-autopost
+        run: python3 service.py --check
+
+      - name: Post next clip
+        if: steps.guard.outputs.due == 'true'
+        working-directory: tools/b24-autopost
+        run: python3 service.py --max-posts 1
+
+      - name: Commit state
+        run: |
+          git config user.name "b24-autopost-bot"
+          git config user.email "b24-autopost-bot@users.noreply.github.com"
+          git add tools/b24-autopost/state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "state: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          else
+            echo "state unchanged"
+          fi
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.run_id }}
+          path: tools/b24-autopost/logs/
+          if-no-files-found: ignore
+
+      - name: Report failure as GitHub issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "Автопостинг: сбой прогона ($(date -u +%Y-%m-%dT%H:%MZ))" \
+            --body "Прогон упал: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} — автопостинг НЕ отработал. Проверить логи (артефакт logs-)." || true
+
+      - name: Telegram failure alert
+        if: failure()
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          tok = os.environ["TG_BOT_TOKEN"]
+          text = "⚠️ Сбой автопостинга Б24→Telegram / прогон: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          data = json.dumps({"chat_id": "-1002203119783", "text": text}).encode("utf-8")
+          req = urllib.request.Request("https://api.telegram.org/bot%s/sendMessage" % tok, data=data, headers={"Content-Type": "application/json"})
+          print(urllib.request.urlopen(req, timeout=30).read().decode()[:120])
+          PY
